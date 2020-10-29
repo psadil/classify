@@ -1,0 +1,385 @@
+---
+title: "classify"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+
+```{r packages, message=FALSE}
+library(tidyverse)
+library(brms)
+```
+
+I'll use [brms](https://paul-buerkner.github.io/brms/) to build the model. `brms` is a high-level package for interfacing with Stan. It has two "backends", other packages that handle most of the communication with R [RStan](https://github.com/stan-dev/rstan) and [cmdstanr](https://mc-stan.org/cmdstanr/). `cmdstanr` is newer and takes a bit more setup, but it offers many advantages. It's worth taking a look at their [Getting Started vignette](https://mc-stan.org/cmdstanr/articles/cmdstanr.html). The most critical steps are the following, which install the `cmdstanr` package and then uses `cmdstanr` to install `cmdstan`. 
+
+```{r, eval=FALSE}
+# install cmdstanr
+install.packages("cmdstanr", repos = c("https://mc-stan.org/r-packages/", getOption("repos")))
+# install cmdstan
+cmdstanr::install_cmdstan()
+```
+
+# Data
+
+The following is a rather dense function. Feel free to skim through it; it's main purpose is to load the data and reshape it into a "tidier" shape, something that `brms` will know how to work with. 
+
+```{r, munge}
+
+munge <- function(fnames){
+  d <- map(fnames,
+           function(x) R.matlab::readMat(x)[[1]]) %>%
+    map_depth(
+      3,
+      function(x) x %>%
+        magrittr::set_colnames(c("feature1","feature2","object")) %>%
+        as_tibble(rownames = "trial")) %>%
+    map_depth(.depth = 1, bind_rows, .id = "region") %>%
+    bind_rows(.id = "participant") %>%
+    pivot_longer(
+      cols=c("feature1", "feature2", 'object'),
+      names_to = "class") %>%
+    mutate(
+      region = factor(
+        region, 
+        levels = 1:26, 
+        labels = c('V1v', 'V1d', 'V2v', 'V2d', 'V3v', 'V3d', 'hV4', 'VO1', 'VO2', 'PHC12','TO2' ,'TO1', 'LO2', 'LO1', 'V3AB', 'IPS0', 'IPS1', 'IPS2', 'IPS3', 'IPS4', 'IPS5','SPL1','FEF','PHC', 'PRC', 'HC')),
+      class = factor(class),
+      value = as.logical(value),
+      trial = factor(trial),
+      participant = factor(participant))
+  d
+}
+
+```
+
+
+The function can be used to load a participant's data. 
+
+```{r, sub1}
+
+d <- munge(here::here("data-raw", "roi_class_results_LDA.mat"))
+knitr::kable(head(d))
+```
+
+Let's make a quick plot of the data. This will show the average classification accuracy (across trials) for each region, broken down by the three kinds of classification.
+
+```{r}
+
+plot_d <- function(d){
+  d %>%
+    group_by(region, class) %>%
+    summarise(value = mean(value), .groups = "drop") %>%
+    ggplot(aes(x=region, y = value, color=class)) +
+    geom_point() +
+    ylim(c(0,1)) +
+    theme(axis.text.x = element_text(angle=60, hjust=1))
+}
+
+plot_d(d)
+```
+
+From this, we see that the two features are generally easier classify, as compared to the object (this makes sense, given that chance for the object classification is lower). It looks like there are difference between the predictability of the two features, especially in the early visual regions. 
+
+# Modeling
+
+As a rule of thumb, I advice starting with simpler models, slowly adding features. All of these models will involve some kind of logistic regression, but we'll see that they can get rather complex.
+
+## Model 1
+
+For this model, let $y_{i,j}$ be the observation (either a 0 or 1) on trial $i$ and region $j$. We'll say that this is distributed according to a Bernoulli distribution, parameterized by $p_{i,j}$ -- the probability of getting a 1. We're going to model this probability with logistic regression. So, rather than modeling each $p_{i,j}$ directly, we will instead model the result of passing $p_{i,j}$ through a logit function. The logit takes a value between 0 and 1 (e.g., a probability) and outputs a value between positive and negative infinity. We then build a linear model of the result of that transformed probability. In this first model, we'll say that the logit is equal to some intercept parameter, $\beta_0$, plus a parameter governing how easily each class is predicted $\beta_1$,^[as with any linear models, there is a lot of flexibility in how to parameterize the intercept. In the following, the intercept will correspond to how well easily one of the classes is predicted, arbitrarily pinned to feature1. This means that $\beta_1$ will be a vector of length 2, whose interpretations are roughly how much easier it is to predict feature2 relative to feature1, and how much easier it is to predict an object relative to feature1.] plus a parameter that governs how well each region is at predicting *any* class, $\alpha^{region}_{j}$.
+
+As with frequentist modeling, there is a question of whether we each of the effects should be 'fixed' or 'random'. As with frequentist modeling, there are many different ways of talking about what these terms even mean. I usually find it helpful to think about whether I expect one level to have information about other levels. In the case of regions, I expect that knowing the predictive accuracy of one region provides a lot of information about the predictive accuracy of another region. So, it makes sense to think of the effect of region as 'random', to estimate it hierarchically. Put another way, it makes sense to [pool information about the regions together](https://mc-stan.org/rstanarm/articles/pooling.html). 
+
+It might make sense to estimate the effect of class hierarchically also, since accuracy on feature 1 is probably informative about the accuracy of feature 2. But with only 3 levels of class (feature 1, feature 2, and object), it becomes very hard to estimate the variability in the effect of class, meaning that it's hard to effectively pool information across classes. For this reason, the effect of class will be estimated without a hierarchy. 
+
+In math, we could express this model as follows.
+
+$$
+y_{i,j} \sim bernoulli(p_{i,j}) \\
+\log ( \frac{p_{i,j}}{1-p_{i,j}} ) = \beta_0 + \beta_1x_{1,i} + \alpha^{region}_{j} \\
+\alpha^{region} \sim normal(0, \sigma^{region}) \\
+\sigma^{region} \sim student\_t(3, 0, 2.5) \\
+\beta_0,\beta_1 \sim normal(0, 2.5) \\
+$$
+
+The last two lines, beginning with $\sigma^{region}$ and $\beta_0,\beta_1$, are the priors. These are a kind of default prior. There is a lot of data, so I expect that the priors won't matter too much (more on this later).
+
+
+## Coding model 1
+
+It'll be worth reading through some of the documentation for `brms` (e.g., the above link, also [here](https://www.jstatsoft.org/article/view/v080i01), and see [here](https://paul-buerkner.github.io/blog/brms-blogposts/) for a neat collection of blog posts on `brms`).
+
+One of the great things about `brms` is that we can define models using the same syntax as the `lm`, `glm`, and `lmer` functions. The above model would be defined as follows, excluding the priors.
+
+```{r, formula1}
+f <- brmsformula(
+  value ~ 0 + Intercept + class + (1 || region),
+  family = bernoulli)
+```
+
+
+`brms` puts default priors on a few of the parameters, and leaves other priors undefined. The function `get_prior` is helpful for seeing what parameters will need priors, or seeing the defaults.
+
+```{r, get_prior}
+get_prior(f,d)
+```
+
+I always find that output confusing. To use the math symbols defined above, this output is saying is that there are uniformly flat priors on $\beta_0$ and $\beta_1$, and that there is a $student(3, 0, 2.5)$ prior on the the effect of region. So, all we need is to set a prior on the effect of class. For this, use the `prior` function.
+
+```{r, prior}
+p <- prior(normal(0, 2.5), class = "b")
+```
+
+The model can then be fit as follows. Note that I'm only running 3 chains, but that's mostly so that this demo doesn't take too long. In practice, you should probably run 4.
+
+```{r, fit1}
+
+fit <- brm(
+  formula = f,
+  data = d,
+  prior = p,
+  chains = 3,
+  cores = 3,
+  backend = "cmdstanr")
+
+```
+
+
+## Analyzing results
+
+There are always many ways to look at the fitted results. This model happened to converge easily, so I'm first going to focus on the predictions of the model. Again, the following function is rather dense. It uses the `brms` function `posterior_epred` to generate predictions from the fitted model, and then uses a bunch of `tidyverse` functions to reshape and summarize those predictions. 
+
+```{r, get_predictions}
+
+get_predictions <- function(.fit, .d, ...){
+  
+  predictions <- posterior_epred(.fit, cores=3) %>%
+    magrittr::set_colnames(1:ncol(.)) %>%
+    as_tibble() %>%
+    mutate(.draw = 1:n()) %>%
+    pivot_longer(
+      cols = c(-.draw), 
+      names_to = "observation", 
+      names_transform = list(observation = as.numeric),
+      values_to = "post") %>%
+    group_nest(.draw) %>%
+    mutate(data = map(.x=data, .f= bind_cols, .d)) %>%
+    unnest(data) %>%
+    select(-value) %>%
+    group_by(...) %>%
+    summarise(
+      ymin = quantile(post, .025),
+      ymax = quantile(post, .975),
+      .groups = "drop") 
+  predictions
+}
+
+```
+
+
+The function can be called like so.
+
+```{r, predictions1}
+
+predictions1 <- get_predictions(fit, d, class, region)
+
+```
+
+The variable `predictions1` contains the 95% highest density interval of the model's predictions, broken down by class and region. The bounds are stored in columns `ymin` and `ymax`.
+
+```{r, predictions_out}
+knitr::kable(head(predictions1))
+```
+
+Next, we'll re-generate a plot of the data, and then add to it the computed model predictions as vertical bars.
+
+```{r, plot1}
+
+plot_d(d) +
+  geom_linerange(
+    aes(ymin=ymin,ymax=ymax, x=region, color=class),
+    alpha = 0.5,
+    size = 2,
+    data = predictions1,
+    inherit.aes = FALSE) 
+
+```
+
+This result might make sense. What we see is that the posteriors are close to the observations, but they do not quite match the variability across regions. That is, the model struggles to capture how some regions are particularly good at some classes. The model can only capture variability in the average accuracy of each class and variability in the average accuracy for each region, but it does not yet capture how these two might interact.
+
+## Model 2
+
+This model will be almost identical to the first. The difference will be the addition of another parameter, $\alpha^{class}_j$, which controls how well each region is at predicting each class.
+
+$$
+y_{i,j} \sim bernoulli(p_{i,j}) \\
+\log ( \frac{p_{i,j}}{1-p_{i,j}} ) = \beta_0 + \beta_{1}x_{1,i} + \alpha_{j}^{region} + \alpha_j^{class} \\
+\alpha^{region} \sim normal(0, \sigma^{region}) \\
+\beta^{class} \sim normal(0, \sigma^{class}) \\ 
+\sigma^{region},\sigma^{class} \sim student\_t(3, 0, 2.5) \\
+\beta_0,\beta_{1,j} \sim normal(0, 2.5) \\
+$$
+
+This is presumably a very important addition, for two reasons. First, Model 1 clearly did not fit the data, meaning that it was not a sufficient model. Second, we'd expect for theoretical regions that some regions are better at predicting each features (or, we'd hope that, e.g., some regions are better at predicting features relative to objects :) ).
+
+
+This new model is defined as follows.
+
+```{r, formula2}
+f2 <- brmsformula(
+  value ~ 0 + Intercept + class + (class || region),
+  family = bernoulli)
+```
+
+
+```{r, fit2}
+
+fit2 <- brm(
+  formula = f2,
+  data = d,
+  prior = p,
+  chains = 3,
+  cores = 3,
+  backend = "cmdstanr")
+
+```
+
+
+As before, we'll get the model prediction,
+
+```{r, predictions2}
+
+predictions2 <- get_predictions(fit2, d, region, class)
+
+```
+
+and then plot.
+
+```{r, plot2}
+
+plot_d(d) +
+  geom_linerange(
+    aes(ymin=ymin,ymax=ymax, x=region, color=class),
+    alpha = 0.5,
+    size = 2,
+    data = predictions2,
+    inherit.aes = FALSE) 
+
+```
+
+Bam! That's great. The new model is able to match the data. 
+
+
+# Model 2.1
+
+Now that the model is fitting the data accurately, more could be done to increase the precision of those predictions -- to reduce the variability of the predictions. For example, it may be the case that regions with high scores on feature 1 also tend to have scores on feature 2. Currently, such correlations are not modeled. Here's how the formula would be redefined, to add such correlations.
+
+```{r, formula21}
+f21 <- brmsformula(
+  value ~ 0 + Intercept + class + (class | region),
+  family = bernoulli)
+```
+
+The only difference is that the double bar in the model formula has been replaced with a single bar.
+
+Adding correlations often causes the model to stop converging. For these data, that was not the case; the model estimated the correlation parameters just fine.
+
+```{r, fit21}
+
+fit21 <- brm(
+  formula = f21,
+  data = d,
+  prior = p,
+  chains = 3,
+  cores = 3,
+  backend = "cmdstanr")
+
+```
+
+`brms` provides many ways to make quick plots of the data. The next plots look at the distribution of each correlation parameter, next to a trace plot. It looks like there are high correlations between each of these parameters, indicating that regions which tend to be good at one kind of classification are often better at the others.
+
+
+```{r}
+plot(fit21, pars = "cor", combo = c("hist","trace"), bins=40)
+```
+
+
+It's a bit hard to tell, but the predictions for each region do appear slightly more precise (the bars are slightly narrower).
+
+```{r}
+predictions21 <- get_predictions(fit21, d)
+plot_d(d) +
+  geom_linerange(
+    aes(ymin=ymin,ymax=ymax, x=region, color=class),
+    alpha = 0.5,
+    size = 2,
+    data = predictions21,
+    inherit.aes = FALSE) 
+```
+
+
+# Including Participants
+
+```{r}
+
+d_all <- munge(c(
+  here::here("data-raw", "roi_class_results_LDA.mat"),
+  here::here("data-raw", "roi_class_results_LDA_2.mat"),
+  here::here("data-raw", "roi_class_results_LDA_3.mat")))
+d_all
+```
+
+
+```{r, plot_d_all}
+
+d_all %>%
+  group_by(region, class, participant) %>%
+  summarise(value = mean(value), .groups = "drop") %>%
+  ggplot(aes(x=region, y = value, color=class)) +
+  geom_point() +
+  ylim(c(0,1)) +
+  facet_wrap(~participant, ncol=1) +
+  theme(axis.text.x = element_text(angle=60, hjust=1))
+
+```
+
+The data look very consistent across participants. And with only 3 participants, there isn't much information available for estimating variability in these effects.
+
+```{r}
+
+f3 <- brmsformula(
+  value ~ 0 + Intercept + class + (class | region ) + (1 || participant),
+  family = bernoulli)
+
+p3 <- p + prior(normal(0, 2), class = "sd", group = "participant")
+
+fit3 <- brm(
+  formula = f3,
+  data = d_all,
+  prior = p3,
+  chains = 3,
+  cores = 3,
+  backend = "cmdstanr")
+
+
+```
+
+```{r}
+f30 <- brmsformula(
+  value ~ 0 + Intercept + class + (class | region ),
+  family = bernoulli)
+
+fit3 <- brm(
+  formula = f30,
+  data = d_all,
+  prior = p,
+  chains = 3,
+  cores = 3,
+  backend = "cmdstanr")
+
+```
+
+
