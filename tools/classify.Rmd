@@ -8,7 +8,7 @@ knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
 ```
 
 
-```{r packages, message=FALSE}
+```{r packages, message=FALSE, cache=FALSE}
 library(tidyverse)
 library(brms)
 ```
@@ -61,7 +61,7 @@ The function can be used to load a participant's data.
 ```{r, sub1}
 
 d <- munge(here::here("data-raw", "roi_class_results_LDA.mat"))
-knitr::kable(head(d))
+d
 ```
 
 Let's make a quick plot of the data. This will show the average classification accuracy (across trials) for each region, broken down by the three kinds of classification.
@@ -191,7 +191,7 @@ predictions1 <- get_predictions(fit, d, class, region)
 The variable `predictions1` contains the 95% highest density interval of the model's predictions, broken down by class and region. The bounds are stored in columns `ymin` and `ymax`.
 
 ```{r, predictions_out}
-knitr::kable(head(predictions1))
+predictions1
 ```
 
 Next, we'll re-generate a plot of the data, and then add to it the computed model predictions as vertical bars.
@@ -310,7 +310,7 @@ plot(fit21, pars = "cor", combo = c("hist","trace"), bins=40)
 It's a bit hard to tell, but the predictions for each region do appear slightly more precise (the bars are slightly narrower).
 
 ```{r}
-predictions21 <- get_predictions(fit21, d)
+predictions21 <- get_predictions(fit21, d, region, class)
 plot_d(d) +
   geom_linerange(
     aes(ymin=ymin,ymax=ymax, x=region, color=class),
@@ -320,8 +320,44 @@ plot_d(d) +
     inherit.aes = FALSE) 
 ```
 
+# Model 2.2
+
+The next model will do something tricky. At this point, trials are not modeled directly. That is, each of the 320 observations per region per class are treated as draws from the same variable. But, there could be a parameter associated with each trial. The idea is that we have repeated information about each trial, given that there are 26 measurements per trial. So, this parameter tries to account for how, e.g., how perhaps all brain regions did unexpectedly poorly on some particular trial. To do this, it probably makes the most sense to treat trials hierarchically.
+
+```{r fit22}
+f22 <- brmsformula(
+  value ~ 0 + Intercept + class + (class | region) + (1 || trial),
+  family = bernoulli)
+
+fit22 <- brm(
+  formula = f22,
+  data = d,
+  prior = p,
+  chains = 3,
+  cores = 3,
+  backend = "cmdstanr")
+
+```
+
+Great news that the model fit. Though, I'm not entirely sure what's the best way to plot these predictions, to visualize whether the additional trial parameter helped (perhaps something like a moving window, tracking the average accuracy across time?). Instead, we can compare the leave-one-out cross-validation scores of the last two models, asking whether the additional parameters associated with each trial were worth the added complexity.
+
+```{r, loo}
+fit21 <- add_criterion(fit21, "loo")
+fit22 <- add_criterion(fit22, "loo")
+```
+
+```{r, compare}
+loo_compare(fit21, fit22, criterion = "loo")
+```
+
+The output shows the loss in the cross-validation score, relative to the best model (so, the best model has a loss of 0). Given that this is a Bayesian cross-validation, there is also a measure of the uncertainty in those predictive losses, the standard error of the difference. There are no hard rules about how many standard errors signify something important, but more than 3-4 are usually worth patying attention to.
+
 
 # Including Participants
+
+Up to this point, we've only analyzed one participant. But there are three available. Presumably, all of these parameters vary across participants. Unfortunately, it is very hard to estimate this variability with only three participants. But we'll give it a shot, in part to see what can go wrong with a model.
+
+Here's loading the data.
 
 ```{r}
 
@@ -331,7 +367,7 @@ d_all <- munge(c(
   here::here("data-raw", "roi_class_results_LDA_3.mat")))
 d_all
 ```
-
+Here's plotting the data, broken down by participant.
 
 ```{r, plot_d_all}
 
@@ -346,9 +382,9 @@ d_all %>%
 
 ```
 
-The data look very consistent across participants. And with only 3 participants, there isn't much information available for estimating variability in these effects.
+The data look very consistent across participants. 
 
-```{r}
+```{r, fitparticipants, eval=FALSE}
 
 f3 <- brmsformula(
   value ~ 0 + Intercept + class + (class | region ) + (1 || participant),
@@ -367,7 +403,11 @@ fit3 <- brm(
 
 ```
 
-```{r}
+I haven't saved that model in the rmarkdown file, because running it takes a while. But if you did run it, you would notice that it prints a warning about divergences Those divergences indicate that the posterior distribution, as estimated by Stan, is likely not a good reflection of the true posterior distribution. Divergences are a part of a huge topic. The short of it is that any divergences at all are a sign that something is wrong. Occasionally, divergences can be removed by tweaking Stan's algorithm for sampling (e.g., by setting `adapt_delta=.99` when calling the function `brm`). Often, it requires changing the model. For some more detail, you might [browse the Stan forum](https://discourse.mc-stan.org/), look at a few of [these case studies](https://betanalpha.github.io/writing/), or look through some of the [official Stan documentation](https://mc-stan.org/users/documentation/). 
+
+At this early stage, there might not be much point in spending a long time trying to get the model to fit with just three participants, since the issues may go away with more participants. If you wanted to fit all participants, you could try just ignoring potential variability due to participants, as follows.
+
+```{r, fitall0, eval=FALSE}
 f30 <- brmsformula(
   value ~ 0 + Intercept + class + (class | region ),
   family = bernoulli)
@@ -382,4 +422,10 @@ fit3 <- brm(
 
 ```
 
+I do suspect that the divergences will go away with more participants. But this would be a bad thing to only assume, since participants are expensive. Also, it's possible to use the model to simulate more participants, and see whether the divergences actually go away. That is, there is no reason to hope things get better with more participants.
 
+# Next Steps
+
+1. Refit the model with participant-level parameters, using simulated data. Functions from the `brm` package will help. For example, you can call `brm` with the argument `sample_prior="only"` to get samples from just the prior distribution, and then use the function `posterior_predict()` to generate predictions with those samples. In particular, you can use the `newdata` argument to `posterior_predict()` to generate predictions for additional participants.
+
+2. Given these model predictions, how should we calculate an FCI? I'm not entirely sure about this.
