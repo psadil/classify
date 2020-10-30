@@ -611,6 +611,36 @@ y_{i,j} \sim bernoulli(p_{i,j}) \\
 ## Mean chain execution time: 111.0 seconds.
 ## Total execution time: 113.8 seconds.</code></pre>
 </div>
+<div id="checking-validity-of-posterior-distribution" class="section level2">
+<h2>Checking validity of posterior distribution</h2>
+<p>It’s important to remember that Bayesian analyses, done with some kind of Monte Carlo estimation, provide only an approximation to the true posterior. It’s very important to check whether the approximation is any good. There are many ways to do those checks. Some of the checks can be looked at by printing the fit object.</p>
+<pre class="r"><code>fit</code></pre>
+<pre><code>##  Family: bernoulli 
+##   Links: mu = logit 
+## Formula: value ~ 0 + Intercept + class + (1 || region) 
+##    Data: d (Number of observations: 24960) 
+## Samples: 3 chains, each with iter = 2000; warmup = 1000; thin = 1;
+##          total post-warmup samples = 3000
+## 
+## Group-Level Effects: 
+## ~region (Number of levels: 26) 
+##               Estimate Est.Error l-95% CI u-95% CI Rhat Bulk_ESS Tail_ESS
+## sd(Intercept)     0.53      0.08     0.40     0.72 1.00      255      456
+## 
+## Population-Level Effects: 
+##               Estimate Est.Error l-95% CI u-95% CI Rhat Bulk_ESS Tail_ESS
+## Intercept        -0.74      0.11    -0.95    -0.52 1.02      173      358
+## classfeature2     0.24      0.03     0.18     0.30 1.00     1111     1750
+## classobject      -1.35      0.04    -1.43    -1.27 1.00     1298     1699
+## 
+## Samples were drawn using sample(hmc). For each parameter, Bulk_ESS
+## and Tail_ESS are effective sample size measures, and Rhat is the potential
+## scale reduction factor on split chains (at convergence, Rhat = 1).</code></pre>
+<p>Look for the coluns about ESS (effective sample size) and Rhat. ESS is a measure of how much information is contained in the approximation (roughly analogous to the number of observations in an experiment). There are many opinions about what ESS is sufficient. It’ll usually depend on what exactly you need to estimate.</p>
+<p>The Rhat value is a statistic that looks at whether the chains have converged to the same posterior. It’s a problem if Rhat is above 1.1, but anything above ~1.01 should arouse some suspicion.</p>
+<p>The package <code>shinystan</code> provides a great tool for exploring more aspects of the model, including diagnostics. It can be launched as follows.</p>
+<pre class="r"><code>shinystan::launch_shinystan(fit)</code></pre>
+</div>
 <div id="analyzing-results" class="section level2">
 <h2>Analyzing results</h2>
 <p>There are always many ways to look at the fitted results. This model happened to converge easily, so I’m first going to focus on the predictions of the model. Again, the following function is rather dense. It uses the <code>brms</code> function <code>posterior_epred</code> to generate predictions from the fitted model, and then uses a bunch of <code>tidyverse</code> functions to reshape and summarize those predictions.</p>
@@ -1051,8 +1081,11 @@ fit3 &lt;- brm(
 <div id="next-steps" class="section level1">
 <h1>Next Steps</h1>
 <ol style="list-style-type: decimal">
-<li><p>Refit the model with participant-level parameters, using simulated data. Functions from the <code>brm</code> package will help. For example, you can call <code>brm</code> with the argument <code>sample_prior=&quot;only&quot;</code> to get samples from just the prior distribution, and then use the function <code>posterior_predict()</code> to generate predictions with those samples. In particular, you can use the <code>newdata</code> argument to <code>posterior_predict()</code> to generate predictions for additional participants.</p></li>
+<li><p>Try out different priors. The priors defined above might work, but it’s a good idea to see how those priors translate into predictions. Take a look at the help page for the <code>brm</code> function, and notice that you can run it with the argument <code>sample_prior=&quot;only&quot;</code> to get samples from just the prior distribution. You could then plot those predictions, as before.</p></li>
+<li><p>What’s a good way to plot predictions for each trial, to check why the by-trial parameter was so helpful?</p></li>
+<li><p>Refit the model with participant-level parameters, using simulated data. This could be done by sampling from the prior and then using the function <code>posterior_predict()</code> to generate predictions with those samples. In particular, you can use the <code>newdata</code> argument to <code>posterior_predict()</code> to generate predictions for additional participants.</p></li>
 <li><p>Given these model predictions, how should we calculate an FCI? I’m not entirely sure about this.</p></li>
+<li><p>Once the model has settled down a bit (i.e., when it’s more clear exactly which parameters will be included), it would be a good idea to run a few extra validity checks. Such checks are another big topic.</p></li>
 </ol>
 </div>
 <div class="footnotes">

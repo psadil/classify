@@ -146,6 +146,23 @@ fit <- brm(
   backend = "cmdstanr")
 
 ```
+## Checking validity of posterior distribution
+
+It's important to remember that Bayesian analyses, done with some kind of Monte Carlo estimation, provide only an approximation to the true posterior. It's very important to check whether the approximation is any good. There are many ways to do those checks. Some of the checks can be looked at by printing the fit object.
+
+```{r, check}
+fit
+```
+
+Look for the coluns about ESS (effective sample size) and Rhat. ESS is a measure of how much information is contained in the approximation (roughly analogous to the number of observations in an experiment). There are many opinions about what ESS is sufficient. It'll usually depend on what exactly you need to estimate. 
+
+The Rhat value is a statistic that looks at whether the chains have converged to the same posterior. It's a problem if Rhat is above 1.1, but anything above ~1.01 should arouse some suspicion.
+
+The package `shinystan` provides a great tool for exploring more aspects of the model, including diagnostics. It can be launched as follows.
+
+```{r, shiny, eval=FALSE}
+shinystan::launch_shinystan(fit)
+```
 
 
 ## Analyzing results
@@ -426,6 +443,13 @@ I do suspect that the divergences will go away with more participants. But this 
 
 # Next Steps
 
-1. Refit the model with participant-level parameters, using simulated data. Functions from the `brm` package will help. For example, you can call `brm` with the argument `sample_prior="only"` to get samples from just the prior distribution, and then use the function `posterior_predict()` to generate predictions with those samples. In particular, you can use the `newdata` argument to `posterior_predict()` to generate predictions for additional participants.
+1. Try out different priors. The priors defined above might work, but it's a good idea to see how those priors translate into predictions. Take a look at the help page for the `brm` function, and notice that you can run it with the argument `sample_prior="only"` to get samples from just the prior distribution. You could then plot those predictions, as before.
 
-2. Given these model predictions, how should we calculate an FCI? I'm not entirely sure about this.
+2. What's a good way to plot predictions for each trial, to check why the by-trial parameter was so helpful?
+
+3. Refit the model with participant-level parameters, using simulated data. This could be done by sampling from the prior and then using the function `posterior_predict()` to generate predictions with those samples. In particular, you can use the `newdata` argument to `posterior_predict()` to generate predictions for additional participants.
+
+4. Given these model predictions, how should we calculate an FCI? I'm not entirely sure about this.
+
+5. Once the model has settled down a bit (i.e., when it's more clear exactly which parameters will be included), it would be a good idea to run a few extra validity checks. Such checks are another big topic.
+
