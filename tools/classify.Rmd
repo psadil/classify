@@ -367,7 +367,41 @@ fit22 <- add_criterion(fit22, "loo")
 loo_compare(fit21, fit22, criterion = "loo")
 ```
 
-The output shows the loss in the cross-validation score, relative to the best model (so, the best model has a loss of 0). Given that this is a Bayesian cross-validation, there is also a measure of the uncertainty in those predictive losses, the standard error of the difference. There are no hard rules about how many standard errors signify something important, but more than 3-4 are usually worth patying attention to.
+The output shows the loss in the cross-validation score, relative to the best model (so, the best model has a loss of 0). Given that this is a Bayesian cross-validation, there is also a measure of the uncertainty in those predictive losses, the standard error of the difference. There are no hard rules about how many standard errors signify something important, but more than 3-4 are usually worth paying attention to.
+
+# FCI
+
+```{r, fci}
+
+fci <- posterior_predict(fit22, cores=3) %>%
+  magrittr::set_colnames(1:ncol(.)) %>%
+  as_tibble() %>%
+  mutate(.draw = 1:n()) %>%
+  pivot_longer(
+    cols = c(-.draw), 
+    names_to = "observation", 
+    names_transform = list(observation = as.numeric),
+    values_to = "post") %>%
+  group_nest(.draw) %>%
+  mutate(data = map(.x=data, .f= bind_cols, d)) %>%
+  unnest(data) %>%
+  select(-value, -observation) %>%
+  pivot_wider(names_from = "class", values_from = "post") %>%
+  mutate(prediction = feature1*feature2) %>%
+  group_by(.draw, participant, region) %>%
+  summarise(
+    prediction = mean(prediction),
+    empirical = mean(object),
+    .groups = "drop") %>%
+  mutate(fci = log(empirical / prediction))
+```
+
+
+```{r plot_fci}
+fci %>%
+  ggplot(aes(x = fci, y = region)) +
+  tidybayes::stat_halfeye()
+```
 
 
 # Including Participants
